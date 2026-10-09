@@ -70,7 +70,7 @@ const SAMPLE_RATE: u32 = 48_000;
 
 Memory, roughly: the world under 32 KB, delay lines for the space under 100 KB, device buffers a small extra. Resident size stays well under 2 MB, and under 512 KB is the aim. CPU is a small slice of one core, because most slots are silent.
 
-The audio backend should be a single embedded C file (miniaudio or similar): WASAPI, Core Audio, and ALSA, with no separate install. WAV export uses the same render path and can fast-forward the ecology to a requested age before the first sample.
+The audio backend should be a single embedded C file (miniaudio or similar): WASAPI, Core Audio, and ALSA, with no separate install.
 
 ## A world
 
@@ -100,7 +100,7 @@ Subseeds, via SplitMix64, so the streams stay independent:
 * ecology events
 * audio noise
 
-Ecology randomness is a sequential stream advanced once per world-second. `--at 6h` runs `6 * 3600` ecology steps at startup and then starts sound. That is deterministic and cheap. Audio noise is sequential too. A live performance and a later WAV of the same seed share the place and diverge in the exact noise, which is acceptable. Persisting `World` would make them match. v1 does not need that.
+Ecology randomness is a sequential stream advanced once per world-second. `--at 6h` runs `6 * 3600` ecology steps at startup and then starts sound. That is deterministic and cheap. Audio noise is its own sequential stream.
 
 ## Climate and weather
 
@@ -557,8 +557,6 @@ Roster generation, after the preset picks counts and ranges:
 
 Default preset is `broadleaf`.
 
-A later `--walk` can move the equilibrium targets slowly toward another preset. The ear hears turnover: gaps stretch for species the new climate discourages, founders of the better-suited species appear, beds crossfade because their gains follow climate. There is no crossfade of recordings.
-
 ## Sharing a place
 
 ```
@@ -575,19 +573,13 @@ Listener controls stay small: seed, preset, start age, world rate, and a moistur
 
 ## Observers
 
-The world has no knowledge of pixels. A picture is a reader, and the text trace is the first one. Two surfaces, both plain data:
+The world has no knowledge of pixels. The text trace is the reader. Two surfaces, both plain data:
 
-1. **Snapshot**, polled whenever the reader wants. Time of day, daylight, moisture, canopy, wind, shower, water held in the leaves, disturbance, the bed gains (air, water, insects, drip rate), and every individual slot: alive or not, species, kind, pan, distance, whether they are inside a phrase, how far through that phrase, and the pitch they are on. A slot keeps its index for the life of that creature, so a picture can track the same singer until the slot goes quiet. This is enough to draw the place. Canopy is a density. Rain rate is `drip_hz`. A singer is a mark in the stereo field that brightens for the length of a phrase. Copying a snapshot is a few kilobytes and copies no pointers.
+1. **Snapshot**, polled whenever the reader wants. Time of day, daylight, moisture, canopy, wind, shower, water held in the leaves, disturbance, the bed gains (air, water, insects, drip rate), and every individual slot: alive or not, species, kind, pan, distance, whether they are inside a phrase, how far through that phrase, and the pitch they are on. A slot keeps its index for the life of that creature. Copying a snapshot is a few kilobytes and copies no pointers.
 
-2. **Events**, a fixed ring of edges: phrase started, phrase ended, birth, death, storm, shower crossing a threshold. A picture uses these for punctuations such as a hatch or a change in the weather. If the reader falls behind, the oldest edges drop and a counter increments. The snapshot stays true. Drips and gusts are not events. Their rates live on the snapshot, and a picture makes its own particles from those rates, so the ring stays small and a visual never replays an audio buffer.
+2. **Events**, a fixed ring of edges: phrase started, phrase ended, birth, death, storm, shower crossing a threshold. If the reader falls behind, the oldest edges drop and a counter increments. The snapshot stays true. Drips and gusts are not events. Their rates live on the snapshot, so the ring stays small.
 
-Nothing in the ecology calls back into a renderer. A later window, a terminal picture, or another process reads these same two surfaces. When that window lives on a second thread, the audio thread publishes one double-buffered snapshot per block and a single-producer ring of events. The types are plain `Copy` values. Sound never waits on the picture.
-
-A windowing toolkit stays out of the binary until there is a picture worth linking. It would dominate the size.
-
-## MIDI
-
-The internal engine is the instrument. A MIDI mirror of phrase starts is a possible later output for people who want to record the score or drive another synth. It is not required to hear anything, and v1 does not include it.
+Nothing in the ecology calls back into a reader. The types are plain `Copy` values.
 
 ## Defaults
 
@@ -597,7 +589,6 @@ The internal engine is the instrument. A MIDI mirror of phrase starts is a possi
 * World rate: 1×. Animal time: always real.
 * Phrase performances are discarded.
 * Single thread, fixed pools, allocation only at startup.
-* MIDI and a graphical interface wait. The snapshot and the event ring are the door they will use.
 
 ## Build order, when code starts
 
@@ -605,4 +596,3 @@ The internal engine is the instrument. A MIDI mirror of phrase starts is a possi
 2. Chirp, pulse, and the air bed, straight to the speakers.
 3. The other beds, drips, distance, and the short space.
 4. Presets, `--at`, `--from-seedling`, and `--world-rate`.
-5. WAV export on the same path.
