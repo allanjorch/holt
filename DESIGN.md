@@ -413,7 +413,7 @@ Each bed is white noise (xorshift or similar, a few bytes of state) shaped by a 
 
 | Bed | Gain follows | Color |
 |---|---|---|
-| Air | `wind`, as defined above | low and broad, duller as the canopy closes |
+| Air | the gust, around the sheltered `wind` | low and broad, duller as the canopy closes |
 | Water | `moisture`, plus a slower term from `held_water` | mid, soft |
 | Insects | `moisture * nocturnal_or_warm * (1 - 0.5 * wind)` | thin and high, quiet |
 
@@ -424,7 +424,11 @@ drip_rate_hz = held_water * 6          // after rain, a brief patter, then spars
 tick_rate_hz = canopy * wind * 0.05    // a branch, very rare
 ```
 
-A drip is a pulse voice with a short decay, high and small, panned at random. A branch tick is a noise burst of a few milliseconds.
+A drip is a short noise tick with a dull, quiet body. Loudness, color, and length change from drop to drop, and one drop sometimes shakes a softer one loose beside it. Nothing in the drip is a held pitch. A branch tick is a noise burst of a few milliseconds.
+
+Rain follows `shower`, on animal time. It is a soft rush plus impacts whose density follows how hard the shower is. A light shower keeps a few drops separable. A harder one thickens into a rush, and a closed canopy dulls it. When the shower eases, the rush fades and the leaf drips carry what the canopy still holds. `--rain` arrives during a shower. That arrival is weather at the moment of listening, not part of the seed.
+
+The air bed is the wind. Its color follows the canopy, duller as the cover closes. Its level follows the gust: a lull eases it, a blow brings it up, and a gust at rest is the level the place would have had anyway. The `wind` figure in the trace is the sheltered average and stays small under a closed wood. `gust` is the breathing.
 
 There is a floor of air even in a still, dry moment, so the render never collapses to digital silence.
 
@@ -565,17 +569,18 @@ holt --seed 1847392 --preset wetwood
 holt --seed 1847392 --at 6h
 holt --seed 1847392 --from-seedling
 holt --seed 1847392 --world-rate 24
+holt --seed 1847392 --preset wetwood --rain
 ```
 
 The same seed and preset name the same roster, the same equilibrium, and the same initial singers. `--at` is how long the place has already been alive, grown at a natural 1×. `--world-rate` then applies only to the sitting you actually hear. The performance from the moment you press play is new every time, which is the point.
 
-Listener controls stay small: seed, preset, start age, world rate, and a moisture nudge.
+Listener controls stay small: seed, preset, start age, world rate, arriving in rain, and a moisture nudge.
 
 ## Observers
 
 The world has no knowledge of pixels. The text trace is the reader. Two surfaces, both plain data:
 
-1. **Snapshot**, polled whenever the reader wants. Time of day, daylight, moisture, canopy, wind, shower, water held in the leaves, disturbance, the bed gains (air, water, insects, drip rate), and every individual slot: alive or not, species, kind, pan, distance, whether they are inside a phrase, how far through that phrase, and the pitch they are on. A slot keeps its index for the life of that creature. Copying a snapshot is a few kilobytes and copies no pointers.
+1. **Snapshot**, polled whenever the reader wants. Time of day, daylight, moisture, canopy, wind, gust, shower, water held in the leaves, disturbance, the bed gains (air, water, insects, drip rate), and every individual slot: alive or not, species, kind, pan, distance, whether they are inside a phrase, how far through that phrase, and the pitch they are on. A slot keeps its index for the life of that creature. Copying a snapshot is a few kilobytes and copies no pointers.
 
 2. **Events**, a fixed ring of edges: phrase started, phrase ended, birth, death, storm, shower crossing a threshold. If the reader falls behind, the oldest edges drop and a counter increments. The snapshot stays true. Drips and gusts are not events. Their rates live on the snapshot, so the ring stays small.
 

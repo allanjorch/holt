@@ -203,6 +203,8 @@ pub(crate) struct Mixer {
     air: Pink,
     water: Pink,
     air_lp: f32,
+    /// Glides toward the gust's level so a new gust does not step.
+    air_follow: f32,
     air_delay: [f32; 32],
     air_delay_i: usize,
     water_lp: f32,
@@ -210,8 +212,19 @@ pub(crate) struct Mixer {
     water_hp_y: f32,
     insect_hp_x: f32,
     insect_hp_y: f32,
+    rain_wait: u32,
+    rain_hit: f32,
+    rain_pan_l: f32,
+    rain_pan_r: f32,
+    rain_lp: f32,
+    rain_hp_x: f32,
+    rain_hp_y: f32,
+    rain_tick_x: f32,
+    rain_tick_y: f32,
     specks: [Speck; 12],
     drip_wait: u32,
+    /// Follow-up drops shaken loose by a drip. `wait == 0` is an empty slot.
+    shakes: [Shake; 4],
     tick_wait: u32,
     space: Vec<f32>,
     space_i: usize,
@@ -228,6 +241,7 @@ impl Mixer {
             air: Pink::default(),
             water: Pink::default(),
             air_lp: 0.0,
+            air_follow: 0.0,
             air_delay: [0.0; 32],
             air_delay_i: 0,
             water_lp: 0.0,
@@ -235,8 +249,18 @@ impl Mixer {
             water_hp_y: 0.0,
             insect_hp_x: 0.0,
             insect_hp_y: 0.0,
+            rain_wait: 0,
+            rain_hit: 0.0,
+            rain_pan_l: 0.707,
+            rain_pan_r: 0.707,
+            rain_lp: 0.0,
+            rain_hp_x: 0.0,
+            rain_hp_y: 0.0,
+            rain_tick_x: 0.0,
+            rain_tick_y: 0.0,
             specks: [Speck::default(); 12],
             drip_wait: 0,
+            shakes: [Shake::default(); 4],
             tick_wait: 0,
             space: vec![0.0; SPACE_LEN],
             space_i: 0,
@@ -253,6 +277,7 @@ impl Mixer {
         self.air = Pink::default();
         self.water = Pink::default();
         self.air_lp = 0.0;
+        self.air_follow = 0.0;
         self.air_delay = [0.0; 32];
         self.air_delay_i = 0;
         self.water_lp = 0.0;
@@ -260,8 +285,18 @@ impl Mixer {
         self.water_hp_y = 0.0;
         self.insect_hp_x = 0.0;
         self.insect_hp_y = 0.0;
+        self.rain_wait = 0;
+        self.rain_hit = 0.0;
+        self.rain_pan_l = 0.707;
+        self.rain_pan_r = 0.707;
+        self.rain_lp = 0.0;
+        self.rain_hp_x = 0.0;
+        self.rain_hp_y = 0.0;
+        self.rain_tick_x = 0.0;
+        self.rain_tick_y = 0.0;
         self.specks = [Speck::default(); 12];
         self.drip_wait = 0;
+        self.shakes = [Shake::default(); 4];
         self.tick_wait = 0;
         self.space.fill(0.0);
         self.space_i = 0;
@@ -317,7 +352,11 @@ impl Mixer {
             }
         }
 
-        let air_amp = 0.12 + beds.air.clamp(0.0, 1.5) * 0.30;
+        let air_target = (0.12 + beds.air.clamp(0.0, 1.5) * 0.30) * wind_breath(gust);
+        if self.played == 0 {
+            self.air_follow = air_target;
+        }
+        let air_glide = 1.0 - (-1.0 / (1.4 * SR)).exp();
         let air_hz = 200.0 + (1.0 - canopy.clamp(0.0, 1.0)) * 620.0;
         let air_a = one_pole_a(air_hz);
         let water_amp = beds.water.clamp(0.0, 1.0) * 0.07;
@@ -329,35 +368,28 @@ impl Mixer {
 
         for i in 0..frames {
             if poisson_due(&mut self.drip_wait, rng, beds.drip_hz) {
-                spawn(&mut self.specks[..8], rng, SpeckKind::Drip);
+                self.leaf_drip(rng, None, None, true);
             }
+            self.shake_drips(rng);
             if poisson_due(&mut self.tick_wait, rng, beds.tick_hz) {
-                spawn(&mut self.specks[8..], rng, SpeckKind::Tick);
+                spawn_tick(&mut self.specks[8..], rng);
             }
 
             let mut speck_l = 0.0;
             let mut speck_r = 0.0;
             let mut speck_w = 0.0;
             for speck in &mut self.specks {
-                if speck.env <= 0.0 {
+                if speck.env <= 0.0 && speck.click <= 0.0 {
                     continue;
                 }
-                let n = white(&mut speck.noise);
-                let tone = (speck.phase * TAU).sin();
-                speck.phase = (speck.phase + speck.inc).fract();
-                let x = tone * (1.0 - speck.noise_mix) + n * speck.noise_mix;
-                let y = speck.z + speck.pole * (x - speck.z);
-                speck.z = flush(y);
-                let s = y * speck.env * speck.amp;
-                speck.env *= speck.decay;
-                if speck.env < 1.0e-4 {
-                    speck.env = 0.0;
-                }
+                let s = speck_sample(speck);
                 speck_l += s * speck.pan_l;
                 speck_r += s * speck.pan_r;
                 speck_w += s * speck.wet;
             }
 
+            self.air_follow += air_glide * (air_target - self.air_follow);
+            let air_amp = self.air_follow;
             let air_white = rng.f32() * 2.0 - 1.0;
             let pink = self.air.next(air_white);
             self.air_lp += air_a * (pink - self.air_lp);
@@ -386,9 +418,12 @@ impl Mixer {
                 insect_hp_a,
             ) * insect_amp;
 
+            let (rain_l, rain_r) = self.rain(rng, canopy, beds.shower);
+
             let room = self.reflect(wet[i] + speck_w, gust_wobble);
-            let mut left = out[i * 2] + speck_l + air_l + water + insect + room;
-            let mut right = out[i * 2 + 1] + speck_r + air_r + water * 0.92 + insect + room;
+            let mut left = out[i * 2] + speck_l + air_l + water + insect + rain_l + room;
+            let mut right =
+                out[i * 2 + 1] + speck_r + air_r + water * 0.92 + insect + rain_r + room;
 
             let fade = if self.played < FADE_SAMPLES {
                 self.played as f32 / FADE_SAMPLES as f32
@@ -401,6 +436,52 @@ impl Mixer {
             out[i * 2] = soft(left);
             out[i * 2 + 1] = soft(right);
         }
+    }
+
+    /// Rain on the leaves. A light shower keeps a few drops separable. A harder
+    /// one overlaps them into a rush, and a closed canopy dulls it.
+    fn rain(&mut self, rng: &mut Rng, canopy: f32, shower: f32) -> (f32, f32) {
+        let shower = shower.clamp(0.0, 1.0);
+        if shower <= 0.001 {
+            self.rain_hit *= (-1.0 / (0.02 * SR)).exp();
+            if self.rain_hit < 1.0e-4 {
+                self.rain_hit = 0.0;
+                self.rain_wait = 0;
+            }
+            return (0.0, 0.0);
+        }
+        let bright = 1.0 - canopy.clamp(0.0, 1.0) * 0.45;
+        let rate = shower * (22.0 + shower * 90.0);
+        if poisson_due(&mut self.rain_wait, rng, rate) {
+            self.rain_hit = (self.rain_hit + 0.45 + 0.55 * rng.f32()).min(1.6);
+            let pan = rng.gen_range(-0.85, 0.85);
+            self.rain_pan_l = ((1.0 - pan) * 0.5).sqrt();
+            self.rain_pan_r = ((1.0 + pan) * 0.5).sqrt();
+        }
+        self.rain_hit *= (-1.0 / (0.016 * SR)).exp();
+
+        let n = rng.f32() * 2.0 - 1.0;
+        let body_a = one_pole_a(800.0 + bright * 2_400.0);
+        self.rain_lp += body_a * (n - self.rain_lp);
+        self.rain_lp = flush(self.rain_lp);
+        let body = highpass(
+            &mut self.rain_hp_x,
+            &mut self.rain_hp_y,
+            self.rain_lp,
+            (-TAU * (320.0 + bright * 220.0) / SR).exp(),
+        );
+        let tick = highpass(
+            &mut self.rain_tick_x,
+            &mut self.rain_tick_y,
+            n,
+            (-TAU * (2_200.0 + bright * 2_400.0) / SR).exp(),
+        );
+        let steady = body * shower * 0.34;
+        let drops = tick * self.rain_hit * shower * 0.22;
+        (
+            steady + drops * self.rain_pan_l,
+            steady * 0.92 + drops * self.rain_pan_r,
+        )
     }
 
     /// A fraction of a millisecond later, so the air is not a point in the middle.
@@ -429,6 +510,51 @@ impl Mixer {
         self.space_i = (w + 1) % len;
         (early + self.space_damp * 0.18) * 0.55
     }
+
+    /// One leaf drip, and sometimes a softer drop or two shaken loose beside it.
+    /// A shaken drop does not shake another, so a cluster stays a cluster.
+    fn leaf_drip(&mut self, rng: &mut Rng, pan: Option<f32>, amp: Option<f32>, shake: bool) {
+        let pan = pan
+            .unwrap_or_else(|| rng.gen_range(-0.9, 0.9))
+            .clamp(-0.95, 0.95);
+        // Most drops are small. A few are close enough to notice on their own.
+        let amp = amp.unwrap_or_else(|| 0.07 + 0.15 * rng.f32().powi(2));
+        spawn_drip(&mut self.specks[..8], rng, pan, amp);
+        if shake && rng.f32() < 0.42 {
+            let amp2 = amp * rng.gen_range(0.40, 0.75);
+            self.schedule_shake(rng, pan, amp2, 0.040, 0.130);
+            if rng.f32() < 0.35 {
+                let amp3 = amp * rng.gen_range(0.28, 0.55);
+                self.schedule_shake(rng, pan, amp3, 0.075, 0.190);
+            }
+        }
+    }
+
+    fn schedule_shake(&mut self, rng: &mut Rng, pan: f32, amp: f32, min_s: f32, max_s: f32) {
+        let Some(slot) = self.shakes.iter().position(|shake| shake.wait == 0) else {
+            return;
+        };
+        let pan = (pan + rng.gen_range(-0.22, 0.22)).clamp(-0.95, 0.95);
+        self.shakes[slot] = Shake {
+            wait: frames_of(rng.gen_range(min_s, max_s)).max(1),
+            pan,
+            amp,
+        };
+    }
+
+    fn shake_drips(&mut self, rng: &mut Rng) {
+        for i in 0..self.shakes.len() {
+            if self.shakes[i].wait == 0 {
+                continue;
+            }
+            self.shakes[i].wait -= 1;
+            if self.shakes[i].wait == 0 {
+                let pan = self.shakes[i].pan;
+                let amp = self.shakes[i].amp;
+                self.leaf_drip(rng, Some(pan), Some(amp), false);
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -445,16 +571,23 @@ struct Speck {
     wet: f32,
     z: f32,
     pole: f32,
+    /// Bright tick at the attack. Zero for a branch tick, which has no separate click.
+    click: f32,
+    click_decay: f32,
+    hp_x: f32,
+    hp_y: f32,
+    hp_a: f32,
 }
 
-#[derive(Clone, Copy)]
-enum SpeckKind {
-    Drip,
-    Tick,
+#[derive(Clone, Copy, Debug, Default)]
+struct Shake {
+    wait: u32,
+    pan: f32,
+    amp: f32,
 }
 
-fn spawn(specks: &mut [Speck], rng: &mut Rng, kind: SpeckKind) {
-    let slot = specks
+fn quietest(specks: &[Speck]) -> usize {
+    specks
         .iter()
         .enumerate()
         .min_by(|(_, a), (_, b)| {
@@ -463,40 +596,93 @@ fn spawn(specks: &mut [Speck], rng: &mut Rng, kind: SpeckKind) {
                 .unwrap_or(std::cmp::Ordering::Equal)
         })
         .map(|(i, _)| i)
-        .unwrap_or(0);
+        .unwrap_or(0)
+}
+
+fn spawn_tick(specks: &mut [Speck], rng: &mut Rng) {
+    let slot = quietest(specks);
     let pan = rng.gen_range(-0.85, 0.85);
-    let (hz, tau, noise_mix, amp, wet, pole_hz) = match kind {
-        SpeckKind::Drip => (
-            rng.gen_range(1_400.0, 4_200.0),
-            0.042,
-            0.22,
-            0.20,
-            0.28,
-            4_800.0,
-        ),
-        SpeckKind::Tick => (
-            rng.gen_range(650.0, 1_700.0),
-            0.011,
-            0.82,
-            0.32,
-            0.16,
-            3_400.0,
-        ),
-    };
+    let hz = rng.gen_range(650.0, 1_700.0);
     specks[slot] = Speck {
         env: 1.0,
-        decay: (-1.0 / (tau * SR)).exp(),
+        decay: exp_decay(0.011),
         phase: rng.f32(),
         inc: hz / SR,
         pan_l: ((1.0 - pan) * 0.5).sqrt(),
         pan_r: ((1.0 + pan) * 0.5).sqrt(),
         noise: hash_noise(slot as u8, hz.to_bits(), rng.next_u64() as u32),
-        noise_mix,
-        amp,
-        wet,
+        noise_mix: 0.82,
+        amp: 0.32,
+        wet: 0.16,
         z: 0.0,
-        pole: one_pole_a(pole_hz),
+        pole: one_pole_a(3_400.0),
+        click: 0.0,
+        click_decay: 0.0,
+        hp_x: 0.0,
+        hp_y: 0.0,
+        hp_a: 0.0,
     };
+}
+
+/// A leaf drip is a bright noise tick plus a dull, short body. There is no
+/// held pitch, and the color changes from drop to drop.
+fn spawn_drip(specks: &mut [Speck], rng: &mut Rng, pan: f32, amp: f32) {
+    let slot = quietest(specks);
+    let body_hz = rng.gen_range(420.0, 1_500.0);
+    let click_hz = rng.gen_range(2_200.0, 5_200.0);
+    let pan = pan.clamp(-1.0, 1.0);
+    specks[slot] = Speck {
+        env: rng.gen_range(0.28, 0.55),
+        decay: exp_decay(rng.gen_range(0.008, 0.016)),
+        phase: 0.0,
+        inc: 0.0,
+        pan_l: ((1.0 - pan) * 0.5).sqrt(),
+        pan_r: ((1.0 + pan) * 0.5).sqrt(),
+        noise: hash_noise(slot as u8, body_hz.to_bits(), rng.next_u64() as u32),
+        noise_mix: 1.0,
+        amp,
+        wet: rng.gen_range(0.08, 0.20),
+        z: 0.0,
+        pole: one_pole_a(body_hz),
+        click: rng.gen_range(0.55, 0.95),
+        click_decay: exp_decay(rng.gen_range(0.0022, 0.0055)),
+        hp_x: 0.0,
+        hp_y: 0.0,
+        hp_a: (-TAU * click_hz / SR).exp(),
+    };
+}
+
+fn speck_sample(speck: &mut Speck) -> f32 {
+    let n = white(&mut speck.noise);
+    let tone = (speck.phase * TAU).sin();
+    speck.phase = (speck.phase + speck.inc).fract();
+    let x = tone * (1.0 - speck.noise_mix) + n * speck.noise_mix;
+    let y = speck.z + speck.pole * (x - speck.z);
+    speck.z = flush(y);
+    let mut s = y * speck.env;
+    if speck.click > 0.0 {
+        let hp = highpass(&mut speck.hp_x, &mut speck.hp_y, n, speck.hp_a);
+        s += hp * speck.click;
+        speck.click *= speck.click_decay;
+        if speck.click < 1.0e-4 {
+            speck.click = 0.0;
+        }
+    }
+    speck.env *= speck.decay;
+    if speck.env < 1.0e-4 {
+        speck.env = 0.0;
+    }
+    s * speck.amp
+}
+
+/// How the wind is breathing. A gust at rest (0.45) leaves the level alone.
+fn wind_breath(gust: f32) -> f32 {
+    let centered = (gust.clamp(0.0, 1.0) - 0.45) * 1.6;
+    (1.0 + centered).clamp(0.4, 1.85)
+}
+
+fn exp_decay(tau: f32) -> f32 {
+    (-1.0 / (tau.max(1.0 / SR) * SR)).exp()
 }
 
 fn poisson_due(wait: &mut u32, rng: &mut Rng, rate_hz: f32) -> bool {
@@ -620,4 +806,158 @@ fn frames_of(seconds: f32) -> u32 {
 fn delay_index(write: usize, delay: isize, len: usize) -> usize {
     let d = delay.clamp(1, (len as isize) - 1) as usize;
     (write + len - d) % len
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn one_drip(seed: u64) -> (Speck, Vec<f32>) {
+        let mut specks = [Speck::default(); 8];
+        let mut rng = Rng::new(seed);
+        spawn_drip(&mut specks, &mut rng, 0.2, 0.12);
+        let slot = specks.iter().position(|speck| speck.amp > 0.0).unwrap();
+        let speck = specks[slot];
+        let mut live = specks[slot];
+        let n = (0.12 * SR) as usize;
+        let mut samples = Vec::with_capacity(n);
+        for _ in 0..n {
+            samples.push(speck_sample(&mut live));
+        }
+        (speck, samples)
+    }
+
+    #[test]
+    fn a_leaf_drip_is_a_short_unpitched_tick() {
+        let mut poles = Vec::new();
+        let mut clicks = Vec::new();
+        let hp_lo = (-TAU * 5_200.0 / SR).exp();
+        let hp_hi = (-TAU * 2_200.0 / SR).exp();
+        for seed in 1..17 {
+            let (speck, samples) = one_drip(seed);
+            assert_eq!(speck.noise_mix, 1.0, "a drip holds no tone");
+            assert_eq!(speck.inc, 0.0);
+            assert!(speck.click > 0.0);
+            assert!(speck.pole + 1.0e-5 >= one_pole_a(420.0));
+            assert!(speck.pole <= one_pole_a(1_500.0) + 1.0e-5);
+            assert!((hp_lo..=hp_hi).contains(&speck.hp_a));
+            poles.push(speck.pole.to_bits());
+            clicks.push(speck.hp_a.to_bits());
+
+            let peak = samples.iter().fold(0.0f32, |peak, s| peak.max(s.abs()));
+            assert!(peak > 0.01, "silent drip from seed {seed}");
+            let peak_at = samples
+                .iter()
+                .enumerate()
+                .max_by(|(_, a), (_, b)| a.abs().partial_cmp(&b.abs()).unwrap())
+                .unwrap()
+                .0;
+            assert!(
+                peak_at < (0.012 * SR) as usize,
+                "seed {seed} peaks late, at sample {peak_at}"
+            );
+            let last = samples.iter().rposition(|s| s.abs() > peak * 0.08).unwrap();
+            assert!(
+                last < (0.060 * SR) as usize,
+                "seed {seed} still sounding at sample {last}"
+            );
+            let early: f32 = samples[..(0.020 * SR) as usize].iter().map(|s| s * s).sum();
+            let late: f32 = samples[(0.070 * SR) as usize..].iter().map(|s| s * s).sum();
+            assert!(
+                late < early * 0.01,
+                "seed {seed} rings on: tail {late} early {early}"
+            );
+        }
+        let bodies = poles.iter().collect::<std::collections::HashSet<_>>().len();
+        let ticks = clicks
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+        assert!(bodies > 6, "bodies barely vary: {bodies}");
+        assert!(ticks > 6, "ticks barely vary: {ticks}");
+    }
+
+    #[test]
+    fn a_gust_changes_the_wind_without_changing_its_color() {
+        assert!((wind_breath(0.45) - 1.0).abs() < 1.0e-4);
+        let lull = air_rms(0.12);
+        let rest = air_rms(0.45);
+        let blow = air_rms(0.82);
+        assert!(
+            lull < rest * 0.75,
+            "a lull is still the usual wind: {lull} vs {rest}"
+        );
+        assert!(
+            blow > rest * 1.35,
+            "a blow is still the usual wind: {blow} vs {rest}"
+        );
+        assert!(
+            blow < rest * 2.2,
+            "a blow became another sound: {blow} vs {rest}"
+        );
+    }
+
+    fn air_rms(gust: f32) -> f32 {
+        let mut mixer = Mixer::new();
+        let mut voices = [Voice::default(); 1];
+        let mut rng = Rng::new(1);
+        let beds = BedGains {
+            air: 0.11,
+            ..BedGains::default()
+        };
+        let mut buf = [0.0f32; 2];
+        let skip = (0.4 * SR) as usize;
+        let keep = (0.4 * SR) as usize;
+        for _ in 0..skip {
+            mixer.chunk(&mut voices, &mut rng, 0.5, gust, &beds, &mut buf);
+        }
+        let mut sum = 0.0f32;
+        for _ in 0..keep {
+            mixer.chunk(&mut voices, &mut rng, 0.5, gust, &beds, &mut buf);
+            sum += buf[0] * buf[0] + buf[1] * buf[1];
+        }
+        (sum / (keep * 2) as f32).sqrt()
+    }
+
+    #[test]
+    fn some_drips_shake_a_neighbor_loose() {
+        let mut mixer = Mixer::new();
+        let mut rng = Rng::new(7);
+        let mut voices = [Voice::default(); 1];
+        let beds = BedGains {
+            drip_hz: 3.0,
+            ..BedGains::default()
+        };
+        let mut prev = [0.0f32; 8];
+        let mut onsets = Vec::new();
+        let mut buf = [0.0f32; 2];
+        let frames = 8 * SR as usize;
+        for t in 0..frames {
+            mixer.chunk(&mut voices, &mut rng, 0.5, 0.4, &beds, &mut buf);
+            for (s, speck) in mixer.specks[..8].iter().enumerate() {
+                if speck.env > prev[s] + 0.05 {
+                    onsets.push(t);
+                }
+                prev[s] = speck.env;
+            }
+        }
+        let mut gaps = Vec::new();
+        for pair in onsets.windows(2) {
+            let gap = pair[1] - pair[0];
+            if gap > 0 {
+                gaps.push(gap);
+            }
+        }
+        let short = gaps
+            .iter()
+            .filter(|gap| (0.025 * SR) as usize <= **gap && **gap <= (0.200 * SR) as usize)
+            .count();
+        let wide = gaps
+            .iter()
+            .filter(|gap| **gap > (0.250 * SR) as usize)
+            .count();
+        assert!(onsets.len() > 20, "too few drips: {}", onsets.len());
+        assert!(short >= 3, "no shaken drops among {gaps:?}");
+        assert!(wide >= 3, "the drips lost their long gaps among {gaps:?}");
+    }
 }

@@ -9,6 +9,8 @@ use crate::rng::Rng;
 use crate::roster;
 
 const EVENT_CAP: usize = 128;
+/// A moderate shower, already underway when listening starts.
+const ARRIVING_RAIN: f32 = 0.42;
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Individual {
@@ -191,6 +193,20 @@ impl World {
             .unwrap_or(0)
     }
 
+    /// Arrive while a shower is falling. The place, the roster, and the singers
+    /// stay as they are. The rain eases over a few minutes, and the leaves keep
+    /// dripping after it passes.
+    pub fn open_in_rain(&mut self) {
+        self.shower = ARRIVING_RAIN;
+        if !self.shower_latched {
+            self.shower_latched = true;
+            self.emit(WorldEvent::Shower {
+                on: true,
+                intensity: self.shower,
+            });
+        }
+    }
+
     /// Grow the place by `seconds` of life at 1×, without sounding the songs.
     /// The next phrases are then placed in the future.
     pub fn fast_forward(&mut self, seconds: u64) {
@@ -341,6 +357,7 @@ impl World {
             insects: (self.moisture * night * warm * (1.0 - 0.5 * wind)).clamp(0.0, 1.0),
             drip_hz: self.held_water * 6.0,
             tick_hz: self.canopy * wind * 0.05,
+            shower: self.shower,
         }
     }
 
@@ -1266,5 +1283,52 @@ mod tests {
         world.render(&mut buf);
         assert_eq!(world.animal_ms(), start + BLOCK_MS);
         assert!(buf.iter().all(|sample| sample.is_finite()));
+    }
+
+    #[test]
+    fn arriving_rain_is_falling_and_louder_than_the_dry_wood() {
+        let cfg = Config {
+            seed: 16_715_843_759_730_150_935,
+            preset: Preset::Wetwood,
+            ..Config::default()
+        };
+        let mut rainy = World::new(cfg);
+        rainy.open_in_rain();
+        assert!(rainy.snapshot().shower > 0.3);
+        match rainy.poll_event() {
+            Some(WorldEvent::Shower {
+                on: true,
+                intensity,
+            }) => assert!(intensity > 0.3),
+            other => panic!("expected the shower to be announced, got {other:?}"),
+        }
+        let mut dry = World::new(cfg);
+        let (dry_rms, dry_peak) = render_level(&mut dry, 2_000);
+        let (wet_rms, wet_peak) = render_level(&mut rainy, 2_000);
+        assert!(
+            wet_rms > dry_rms * 1.4,
+            "rain too quiet: wet rms {wet_rms} dry rms {dry_rms}"
+        );
+        assert!(wet_peak < 0.95, "rain too loud: peak {wet_peak}");
+        assert!(dry_peak < 0.95, "dry wood too loud: peak {dry_peak}");
+        assert!(wet_peak.is_finite() && dry_rms.is_finite());
+    }
+
+    fn render_level(world: &mut World, ms: u64) -> (f32, f32) {
+        let mut buf = [0.0f32; 960];
+        let mut sum = 0.0f32;
+        let mut peak = 0.0f32;
+        let mut n = 0usize;
+        let blocks = ms / BLOCK_MS;
+        for _ in 0..blocks {
+            world.render(&mut buf);
+            for sample in &buf {
+                assert!(sample.is_finite(), "non-finite sample {sample}");
+                peak = peak.max(sample.abs());
+                sum += sample * sample;
+                n += 1;
+            }
+        }
+        ((sum / n as f32).sqrt(), peak)
     }
 }

@@ -45,6 +45,9 @@ fn run() -> Result<bool, String> {
     if args.at_ms > 0 {
         world.fast_forward(args.at_ms / 1000);
     }
+    if args.rain {
+        world.open_in_rain();
+    }
 
     let labels = labels(world.roster());
     print_place(&world, &labels);
@@ -317,9 +320,14 @@ fn print_place(world: &World, labels: &[String]) {
         world.seed(),
         world.preset().name(),
     );
+    let rain = if snap.shower >= 0.08 {
+        format!("   rain {:.2}", snap.shower)
+    } else {
+        String::new()
+    };
     println!(
-        "      {hour:02}:{minute:02}   canopy {:.2}   moisture {:.2}   wind {:.2}   alive {}",
-        snap.canopy, snap.moisture, snap.wind, snap.alive,
+        "      {hour:02}:{minute:02}   canopy {:.2}   moisture {:.2}   wind {:.2}   gust {:.2}{rain}   alive {}",
+        snap.canopy, snap.moisture, snap.wind, snap.gust, snap.alive,
     );
     println!();
     for (i, species) in world.roster().iter().enumerate() {
@@ -344,12 +352,18 @@ fn print_status(world: &World, listened_ms: u64) {
     let snap = world.snapshot();
     let (hour, minute) = clock(snap.day_phase);
     let singing = snap.individuals.iter().filter(|i| i.singing).count();
+    let rain = if snap.shower >= 0.02 {
+        format!("  rain {:.2}", snap.shower)
+    } else {
+        String::new()
+    };
     println!(
-        "{}  --     {hour:02}:{minute:02}  canopy {:.2}  moisture {:.2}  wind {:.2}  alive {}  singing {singing}",
+        "{}  --     {hour:02}:{minute:02}  canopy {:.2}  moisture {:.2}  wind {:.2}  gust {:.2}{rain}  alive {}  singing {singing}",
         stamp(listened_ms),
         snap.canopy,
         snap.moisture,
         snap.wind,
+        snap.gust,
         snap.alive,
     );
 }
@@ -454,6 +468,7 @@ struct Args {
     at_ms: u64,
     from_seedling: bool,
     world_rate: f32,
+    rain: bool,
     trace: bool,
 }
 
@@ -467,6 +482,7 @@ impl Args {
             at_ms: 0,
             from_seedling: false,
             world_rate: 1.0,
+            rain: false,
             trace: false,
         };
         let mut flags = flags.peekable();
@@ -482,6 +498,7 @@ impl Args {
                 "--for" => args.for_ms = Some(parse_duration(&need(&mut flags, "--for")?)?),
                 "--at" => args.at_ms = parse_duration(&need(&mut flags, "--at")?)?,
                 "--from-seedling" => args.from_seedling = true,
+                "--rain" => args.rain = true,
                 "--trace" => args.trace = true,
                 "--world-rate" => {
                     let raw = need(&mut flags, "--world-rate")?;
@@ -570,13 +587,15 @@ holt — a forest that is a place, not a tape
 
 Usage:
   holt [--seed N] [--preset NAME] [--for DURATION] [--at DURATION]
-       [--from-seedling] [--world-rate N] [--trace]
+       [--from-seedling] [--rain] [--world-rate N] [--trace]
 
 With no --seed, holt picks a new place and prints its number.
 With no --for, it plays until you stop it with Ctrl-C.
 --for sets a length, like 90s, 2m, or 6h. --for 0 prints the roster and stops.
 --seed returns to a place. The first morning is --seed 1847392.
 --at grows the place before you listen.
+--rain arrives while a shower is falling. It eases on its own, and the leaves
+keep dripping after it passes.
 --world-rate speeds the sun, the weather, and succession. The animals stay
 at their own pace. --trace prints a stretch at once, with no sound, and needs --for.
 
@@ -603,6 +622,13 @@ mod tests {
         let parsed = args(&["--seed", "1847392", "--for", "0"]);
         assert_eq!(parsed.seed, Some(1_847_392));
         assert_eq!(parsed.for_ms, Some(0));
+    }
+
+    #[test]
+    fn rain_is_a_way_of_arriving() {
+        let parsed = args(&["--rain", "--preset", "wetwood"]);
+        assert!(parsed.rain);
+        assert_eq!(parsed.preset, Preset::Wetwood);
     }
 
     #[test]

@@ -28,6 +28,7 @@ The first morning this project was heard with is `--seed 1847392`.
 - `--for 2m` listens for two minutes. Durations look like `90s`, `2m`, or `6h`. `--for 0` prints who lives here and stops.
 - `--preset broadleaf` is the morning you get by default. The others are `wetwood`, `dryridge`, `nightmarsh`, and `clearing`.
 - `--at 6h` lets the place grow before you listen. `--from-seedling` starts with a thin canopy.
+- `--rain` arrives while a shower is falling. It eases on its own, and the leaves keep dripping after it passes.
 - `--world-rate 24` moves the sun, the weather, and the slow growth of the wood. The animals stay at their own pace, so a faster day does not turn the songs into chipmunks.
 - `--trace --for 2m` prints that stretch at once, with no sound. `--trace` needs a `--for`.
 

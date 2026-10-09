@@ -332,6 +332,8 @@ pub struct BedGains {
     pub insects: f32,
     pub drip_hz: f32,
     pub tick_hz: f32,
+    /// 0 dry .. 1 a hard shower. The rain texture follows this.
+    pub shower: f32,
 }
 
 /// Edges. Drips and gusts stay off this list; their rates are on the snapshot.
